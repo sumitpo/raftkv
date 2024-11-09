@@ -2,15 +2,11 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"os/exec"
-	"time"
 
 	raft "raftkv/src"
 
@@ -19,43 +15,86 @@ import (
 	"github.com/gookit/slog"
 )
 
-var node *raft.Raft
+/*------------------------utils---------------------------*/
 
-func osCmd(cmd string) []byte {
-	fmt.Printf("in osCmd\n")
-	out, err := exec.Command(cmd).Output()
+func getIPsInSubnet(subnetCIDR string) ([]string, error) {
+	// Parse the subnet CIDR
+	_, subnet, err := net.ParseCIDR(subnetCIDR)
 	if err != nil {
-		return out
+		return nil, err
 	}
-	fmt.Printf("out osCmd\n")
-	return out
+
+	// Get the first and last IP addresses in the subnet
+	startIP := subnet.IP
+	endIP := make(net.IP, len(startIP))
+	copy(endIP, startIP)
+
+	// Calculate the end IP address by OR'ing with the subnet mask and adding the max range
+	for i := 0; i < len(startIP); i++ {
+		endIP[i] |= ^subnet.Mask[i]
+	}
+
+	// List of all IPs in the subnet
+	var ipList []string
+
+	// Start iterating from the start IP to the end IP
+	for ip := startIP; !ip.Equal(endIP); incrementIP(ip) {
+		ipList = append(ipList, ip.String())
+	}
+
+	// Don't forget to include the end IP (it is the last valid IP in the subnet)
+	ipList = append(ipList, endIP.String())
+
+	return ipList, nil
 }
 
-func lookupIp(hostname string) []raft.Peer {
-	r := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{
-				Timeout: time.Millisecond * time.Duration(10000),
-			}
-			return d.DialContext(ctx, network, "127.0.0.11:53")
-		},
-	}
-	ipAddresses, err := r.LookupHost(context.Background(), hostname)
-	var peer []raft.Peer
-	// ipAddresses, err := net.LookupIP(hostname)
-	if err != nil {
-		fmt.Printf("Error resolving hostname: %v\n", err)
-		return []raft.Peer{}
-	}
-	fmt.Printf("%v\n", ipAddresses)
-	/*
-		for _, p := range ipAddresses {
-			peer = append(peer, raft.Peer{Id: 0, Ip: p, Port: 8000})
+// Helper function to increment the IP address by 1
+func incrementIP(ip net.IP) {
+	for j := len(ip) - 1; j >= 0; j-- {
+		ip[j]++
+		if ip[j] != 0 {
+			break
 		}
-	*/
-	return peer
+	}
 }
+
+func getLocalIPAndCIDR() (string, string, error) {
+	// Get all network interfaces on the machine
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return "", "", err
+	}
+
+	// Loop over each interface
+	for _, iface := range interfaces {
+		// Skip interfaces that are not up (e.g., down or loopback interfaces)
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		// Get all addresses for this interface
+		addresses, err := iface.Addrs()
+		if err != nil {
+			return "", "", err
+		}
+
+		// Look for the first valid (non-loopback) IPv4 address
+		for _, addr := range addresses {
+			if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.To4() != nil &&
+				!ipNet.IP.IsLoopback() {
+				// Return the local IP and the CIDR of the network
+				return ipNet.IP.String(), ipNet.String(), nil
+			}
+		}
+	}
+
+	// Return an error if no suitable address was found
+	return "", "", fmt.Errorf("no suitable network interface found")
+}
+
+/*------------------------utils---------------------------*/
+
+var node *raft.Raft
 
 func requestVote(c *gin.Context) {
 	var reqVoteArgs raft.RequestVoteArgs
@@ -152,16 +191,10 @@ func main() {
 		f.EnableColor = true
 	})
 
-	hostname, _ := os.Hostname()
-	ips := lookupIp(hostname)
-	for _, v := range ips {
-		fmt.Printf("[%v] ", v.Ip.String())
-	}
-	fmt.Printf("\n")
-
-	fmt.Printf("hello\n")
-	fmt.Printf("%v\n", osCmd(fmt.Sprintf("nslookup %v", hostname)))
-	fmt.Printf("world\n")
+	ip, ipcidr, _ := getLocalIPAndCIDR()
+	fmt.Printf("ip is %v, ipcidr is %v\n", ip, ipcidr)
+	ipStrs, _ := getIPsInSubnet(ipcidr)
+	fmt.Printf("ips is %v\n", ipStrs)
 
 	// Create a new Gin router
 	router := gin.Default()
