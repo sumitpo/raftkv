@@ -2,14 +2,12 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"os/exec"
+	"sync"
 	"time"
 
 	raft "raftkv/src"
@@ -19,43 +17,131 @@ import (
 	"github.com/gookit/slog"
 )
 
-var node *raft.Raft
+/*------------------------utils---------------------------*/
 
-func osCmd(cmd string) []byte {
-	fmt.Printf("in osCmd\n")
-	out, err := exec.Command(cmd).Output()
+func getIPsInSubnet(subnetCIDR string) ([]net.IP, error) {
+	// Parse the subnet CIDR
+	_, subnet, err := net.ParseCIDR(subnetCIDR)
 	if err != nil {
-		return out
+		return nil, err
 	}
-	fmt.Printf("out osCmd\n")
-	return out
+
+	// Get the first and last IP addresses in the subnet
+	startIP := subnet.IP
+	endIP := make(net.IP, len(startIP))
+	copy(endIP, startIP)
+
+	// Calculate the end IP address by OR'ing with the subnet mask and adding the max range
+	for i := 0; i < len(startIP); i++ {
+		endIP[i] |= ^subnet.Mask[i]
+	}
+
+	// List of all IPs in the subnet
+	var ipList []net.IP
+
+	ip := startIP
+	// Start iterating from the start IP to the end IP
+	for !ip.Equal(endIP) {
+		currentIP := make(net.IP, len(startIP))
+		ip = ip.To4()
+		ip[3] += 1
+		copy(currentIP, ip)
+		ipList = append(ipList, currentIP)
+	}
+
+	// Don't forget to include the end IP (it is the last valid IP in the subnet)
+	ipList = append(ipList, endIP)
+
+	return ipList, nil
 }
 
-func lookupIp(hostname string) []raft.Peer {
-	r := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{
-				Timeout: time.Millisecond * time.Duration(10000),
-			}
-			return d.DialContext(ctx, network, "127.0.0.11:53")
-		},
-	}
-	ipAddresses, err := r.LookupHost(context.Background(), hostname)
-	var peer []raft.Peer
-	// ipAddresses, err := net.LookupIP(hostname)
+func getLocalIPAndCIDR() (string, string, error) {
+	// Get all network interfaces on the machine
+	interfaces, err := net.Interfaces()
 	if err != nil {
-		fmt.Printf("Error resolving hostname: %v\n", err)
-		return []raft.Peer{}
+		return "", "", err
 	}
-	fmt.Printf("%v\n", ipAddresses)
-	/*
-		for _, p := range ipAddresses {
-			peer = append(peer, raft.Peer{Id: 0, Ip: p, Port: 8000})
+
+	// Loop over each interface
+	for _, iface := range interfaces {
+		// Skip interfaces that are not up (e.g., down or loopback interfaces)
+		if iface.Flags&net.FlagUp == 0 {
+			continue
 		}
-	*/
-	return peer
+
+		// Get all addresses for this interface
+		addresses, err := iface.Addrs()
+		if err != nil {
+			return "", "", err
+		}
+
+		// Look for the first valid (non-loopback) IPv4 address
+		for _, addr := range addresses {
+			if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.To4() != nil &&
+				!ipNet.IP.IsLoopback() {
+				// Return the local IP and the CIDR of the network
+				return ipNet.IP.String(), ipNet.String(), nil
+			}
+		}
+	}
+
+	// Return an error if no suitable address was found
+	return "", "", fmt.Errorf("no suitable network interface found")
 }
+
+func getRaftPeers() ([]raft.Peer, int) {
+	ip, ipcidr, _ := getLocalIPAndCIDR()
+	slog.Infof("ip is %v, ipcidr is %v", ip, ipcidr)
+	ips, _ := getIPsInSubnet(ipcidr)
+	// slog.Printf("the ips are %v\n", ips)
+
+	selfIP := net.ParseIP(ip)
+
+	peers := []raft.Peer{}
+	exist := make([]bool, len(ips))
+	for i := range len(ips) {
+		exist[i] = false
+	}
+
+	wg := sync.WaitGroup{}
+	for i := 0; i < len(ips); i++ {
+		wg.Add(1)
+		go func(idx int, ex *bool) {
+			defer wg.Done()
+			url := fmt.Sprintf("http://%v:%v/ping", ips[idx].String(), 8080)
+			res, err := http.Get(url)
+			if err != nil {
+				// fmt.Printf("get err %v\n", err)
+				return
+			}
+			defer res.Body.Close()
+			if res.StatusCode == http.StatusOK {
+				*ex = true
+			}
+		}(i, &exist[i])
+	}
+	wg.Wait()
+	// slog.Printf("exist: %v\n", exist)
+	meId := -1
+	id := 0
+	for i, ip := range ips {
+		if exist[i] != true {
+			continue
+		}
+		peers = append(peers, raft.Peer{Id: id, Ip: ip, Port: 8080})
+		if ip.Equal(selfIP) {
+			meId = id
+		}
+		id += 1
+	}
+	// slog.Printf("peers: %v\n", peers)
+
+	return peers, meId
+}
+
+/*------------------------utils---------------------------*/
+
+var node *raft.Raft
 
 func requestVote(c *gin.Context) {
 	var reqVoteArgs raft.RequestVoteArgs
@@ -152,17 +238,6 @@ func main() {
 		f.EnableColor = true
 	})
 
-	hostname, _ := os.Hostname()
-	ips := lookupIp(hostname)
-	for _, v := range ips {
-		fmt.Printf("[%v] ", v.Ip.String())
-	}
-	fmt.Printf("\n")
-
-	fmt.Printf("hello\n")
-	fmt.Printf("%v\n", osCmd(fmt.Sprintf("nslookup %v", hostname)))
-	fmt.Printf("world\n")
-
 	// Create a new Gin router
 	router := gin.Default()
 
@@ -175,7 +250,6 @@ func main() {
 
 	// Define another GET route with a path parameter
 	router.GET("/hello/:name", hello)
-	fmt.Printf("hello\n")
 
 	node = raft.NewRaft()
 	node.ReqSenderFunc = httpReqVoteFunc
@@ -183,8 +257,20 @@ func main() {
 
 	node.ApdEntriesFunc = httpApdEntriesFunc
 	node.ApdEntriesAddr = "/appendEntries"
+
+	go func() {
+		time.Sleep(5 * time.Second)
+		slog.Info("get peer after sleep for 5 sec")
+		peers, meId := getRaftPeers()
+		slog.Infof("peers: %v", peers)
+		node.SetPeer(peers)
+		node.SetId(meId)
+		node.Start()
+	}()
+
 	go node.Ticker()
 
 	// Start the server on port 8080
+	slog.Info("start run router")
 	router.Run(":8080")
 }

@@ -8,10 +8,10 @@ services:
       replicas: 3
     stdin_open: true
     tty: true
-    # ports:
-    #   - "8081-8083:8080"
     restart: always
     hostname: raftNode
+    networks:
+      - custom_network
 
   watchdog:
     build:
@@ -22,3 +22,13 @@ services:
     ports:
       - "8090:8081"
     restart: always
+    networks:
+      - custom_network
+
+networks:
+  custom_network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: "172.28.0.0/28"  # Set the CIDR block here

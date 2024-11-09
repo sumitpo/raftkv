@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gookit/slog"
@@ -44,7 +45,7 @@ type Peer struct {
 }
 
 type Raft struct {
-	Alive       bool        `json:"alive"`
+	Alive       atomic.Bool `json:"alive"`
 	LeadId      int         `json:"leadId"`
 	CurrentTerm int         `json:"currentTerm"`
 	Role        RoleState   `json:"role"`
@@ -61,9 +62,8 @@ type Raft struct {
 }
 
 func NewRaft() *Raft {
-	return &Raft{
+	tmp := Raft{
 		LeadId:      -1,
-		Alive:       true,
 		CurrentTerm: 0,
 		Role:        candidate,
 		timer:       time.NewTimer(time.Duration(1)),
@@ -71,6 +71,18 @@ func NewRaft() *Raft {
 		ReqVoteAddr:   "/RequestVote",
 		ReqSenderFunc: func(des string, args *RequestVoteArgs, reply *RequestVoteReply) {},
 	}
+	tmp.Shutdown()
+	return &tmp
+}
+
+func (rf *Raft) SetPeer(peers []Peer) {
+	for _, p := range peers {
+		rf.Peers = append(rf.Peers, p)
+	}
+}
+
+func (rf *Raft) SetId(me int) {
+	rf.Me = me
 }
 
 type RequestVoteArgs struct {
@@ -166,19 +178,19 @@ func (rf *Raft) sendAppendEntries(
 }
 
 func (rf *Raft) Shutdown() {
-	rf.Alive = false
+	rf.Alive.Store(false)
+}
+
+func (rf *Raft) Start() {
+	rf.Alive.Store(true)
 }
 
 func (rf *Raft) Ticker() {
 	slog.Infof("into ticker")
-	for rf.Alive == true {
-		/*
-			slog.Infof(
-				"server [%v] is Alive, role is [%v]",
-				rf.Me,
-				roleFmt(rf.Role),
-			)
-		*/
+	for rf.Alive.Load() == false {
+	}
+	slog.Infof("server [%v] is Alive, role is [%v]", rf.Me, roleFmt(rf.Role))
+	for rf.Alive.Load() == true {
 		switch rf.Role {
 		case leader:
 			time.Sleep(time.Duration(heartbeat))
@@ -228,7 +240,7 @@ func (rf *Raft) Ticker() {
 				}
 				wg.Add(1)
 				go func(id int, reply *RequestVoteReply) {
-					rf.RequestVote(args, reply)
+					rf.sendRequestVote(id, args, reply)
 					wg.Done()
 				}(k, &replys[k])
 			}
@@ -259,7 +271,7 @@ func (rf *Raft) GetState() string {
 }
 
 func (rf *Raft) IsAlive() bool {
-	if rf.Alive {
+	if rf.Alive.Load() {
 		return true
 	} else {
 		return false
