@@ -232,6 +232,20 @@ func hello(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Hello " + name})
 }
 
+func disableLoggingForPaths(paths ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Check if the current request path is one of the paths you want to disable logging for
+		for _, path := range paths {
+			if c.Request.URL.Path == path {
+				// Disable Gin's logger for this request
+				c.Set("gin.disable_log", true)
+				break
+			}
+		}
+		c.Next()
+	}
+}
+
 func main() {
 	slog.Configure(func(logger *slog.SugaredLogger) {
 		f := logger.Formatter.(*slog.TextFormatter)
@@ -239,7 +253,10 @@ func main() {
 	})
 
 	// Create a new Gin router
+	gin.DefaultWriter = io.Discard
 	router := gin.Default()
+
+	// router.Use(disableLoggingForPaths("/appendEntries"))
 
 	router.POST("/requestVote", requestVote)
 	router.POST("/appendEntries", appendEntries)

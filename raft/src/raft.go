@@ -33,9 +33,9 @@ func roleFmt(role RoleState) string {
 }
 
 const (
-	minTime     int64 = 50
-	randTimeDur int64 = 300
-	heartbeat   int64 = 40
+	minTime     int64 = 300
+	randTimeDur int64 = 100
+	heartbeat   int64 = 200
 )
 
 type Peer struct {
@@ -97,7 +97,7 @@ type RequestVoteReply struct {
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.Role == leader || rf.Role == follower {
-		slog.Debugf(
+		slog.Infof(
 			"sth must be fucked up, node [%v:%v] get RequestVote from node [%v]",
 			rf.Me,
 			roleFmt(rf.Role),
@@ -108,14 +108,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	if rf.CurrentTerm > args.Term {
 		slog.Infof(
-			"node [%v:%v] term is bigger than node [%v], refuse RequestVote",
+			"node [%v:%v] term is bigger than node [%v:%v], refuse RequestVote",
 			rf.Me,
 			rf.CurrentTerm,
 			args.CandidateId,
+			args.Term,
 		)
 		reply.VoteGranted = false
 		return
 	}
+	reply.VoteGranted = true
+	rf.CurrentTerm = args.Term
 }
 
 func (rf *Raft) sendRequestVote(
@@ -156,6 +159,10 @@ func (rf *Raft) AppendEntries(
 		return
 	}
 
+	if rf.Role == candidate {
+		rf.Role = follower
+	}
+
 	// reset the timer
 	rf.timer.Reset(
 		time.Duration(minTime+rand.Int63()%randTimeDur) * time.Millisecond,
@@ -193,7 +200,7 @@ func (rf *Raft) Ticker() {
 	for rf.Alive.Load() == true {
 		switch rf.Role {
 		case leader:
-			time.Sleep(time.Duration(heartbeat))
+			time.Sleep(time.Duration(heartbeat) * time.Millisecond)
 
 			args := &AppendEntriesArgs{}
 			replys := make([]AppendEntriesReply, len(rf.Peers))
@@ -222,7 +229,7 @@ func (rf *Raft) Ticker() {
 			<-rf.timer.C
 			// when the timer is up, follower switch to candidate
 			if rf.Role == follower {
-				slog.Debugf("node [%v] from follower to candidate", rf.Me)
+				slog.Infof("node [%v] from follower to candidate", rf.Me)
 				rf.Role = candidate
 			}
 
@@ -256,6 +263,7 @@ func (rf *Raft) Ticker() {
 				}
 			}
 			if voteCount > len(rf.Peers)/2+1 {
+				slog.Infof("node [%v] from candidate to leader", rf.Me)
 				rf.Role = leader
 			}
 		}
