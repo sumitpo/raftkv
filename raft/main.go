@@ -89,6 +89,10 @@ func getLocalIPAndCIDR() (string, string, error) {
 	return "", "", fmt.Errorf("no suitable network interface found")
 }
 
+type PongReply struct {
+	Message string `json:"message"`
+}
+
 func getRaftPeers() ([]raft.Peer, int) {
 	ip, ipcidr, _ := getLocalIPAndCIDR()
 	slog.Infof("ip is %v, ipcidr is %v", ip, ipcidr)
@@ -112,10 +116,22 @@ func getRaftPeers() ([]raft.Peer, int) {
 			res, err := http.Get(url)
 			if err != nil {
 				// fmt.Printf("get err %v\n", err)
+				slog.Errorf("get %v from %v", err, ips[idx].String())
 				return
 			}
 			defer res.Body.Close()
-			if res.StatusCode == http.StatusOK {
+			if res.StatusCode != http.StatusOK {
+			}
+			body, err := io.ReadAll(res.Body)
+			if err != nil {
+				slog.Errorf("error read response body")
+				return
+			}
+			var reply PongReply
+			if err = json.Unmarshal(body, &reply); err != nil {
+				slog.Errorf("failed to decode response to json")
+			}
+			if reply.Message == "pong" {
 				*ex = true
 			}
 		}(i, &exist[i])
@@ -185,6 +201,7 @@ func httpReqVoteFunc(
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		slog.Errorf("get %v", resp.StatusCode)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

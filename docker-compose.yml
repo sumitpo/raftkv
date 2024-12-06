@@ -16,6 +16,8 @@ services:
     tty: true
     restart: always
     hostname: raftNode
+    logging:
+      driver: "json-file"
     networks:
       - custom_network
 
@@ -28,6 +30,16 @@ services:
     ports:
       - "8090:8081"
     restart: always
+    networks:
+      - custom_network
+
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: dozzle
+    ports:
+      - "9999:8080"  # Access logs at http://localhost:9999
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - custom_network
 
