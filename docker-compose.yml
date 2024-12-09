@@ -33,15 +33,31 @@ services:
     networks:
       - custom_network
 
-  dozzle:
-    image: amir20/dozzle:latest
-    container_name: dozzle
-    ports:
-      - "9999:8080"  # Access logs at http://localhost:9999
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    environment:
+      - TZ=Asia/China # Set the timezone (adjust accordingly)
+      - ADMIN_PASSWORD=admin
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock # Allows Portainer to interact with the Docker daemon
+    ports:
+      - "9000:9000" # Expose Portainer Web UI on port 9000
     networks:
       - custom_network
+    restart: always
+    deploy:
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000"]
+      interval: 30s
+      retries: 3
+      start_period: 5s
+      timeout: 30s  # Increase timeout for health check
 
 networks:
   custom_network:
