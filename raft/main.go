@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,6 +94,23 @@ type PongReply struct {
 	Message string `json:"message"`
 }
 
+func urlErrStr(errStr string, ip string) bool {
+	urlErr := map[string]int{
+		"network is unreachable": 1,
+		"connection refused":     2,
+		"no route to host":       3,
+	}
+	found := false
+	for k := range urlErr {
+		if strings.Contains(errStr, k) {
+			slog.Debugf("%v:%v", ip, k)
+			found = true
+			break
+		}
+	}
+	return found
+}
+
 func getRaftPeers() ([]raft.Peer, int) {
 	ip, ipcidr, _ := getLocalIPAndCIDR()
 	slog.Infof("ip is %v, ipcidr is %v", ip, ipcidr)
@@ -115,16 +133,19 @@ func getRaftPeers() ([]raft.Peer, int) {
 			url := fmt.Sprintf("http://%v:%v/ping", ips[idx].String(), 8080)
 			res, err := http.Get(url)
 			if err != nil {
-				// fmt.Printf("get err %v\n", err)
-				slog.Errorf("get %v from %v", err, ips[idx].String())
+				if urlErrStr(fmt.Sprint(err), ips[idx].String()) == false {
+					slog.Errorf("%v", err)
+				}
 				return
 			}
 			defer res.Body.Close()
 			if res.StatusCode != http.StatusOK {
+				slog.Errorf("%v:%v", ips[idx].String(), res.StatusCode)
+				return
 			}
 			body, err := io.ReadAll(res.Body)
 			if err != nil {
-				slog.Errorf("error read response body")
+				slog.Errorf("%v:error read response body", ips[idx].String())
 				return
 			}
 			var reply PongReply

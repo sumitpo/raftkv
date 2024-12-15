@@ -25,6 +25,8 @@ services:
     build:
       context: ./watchdog
       dockerfile: Dockerfile
+    environment:
+      - GIN_MODE=release
     stdin_open: true
     tty: true
     ports:
@@ -52,12 +54,6 @@ services:
       resources:
         limits:
           memory: 128M
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000"]
-      interval: 30s
-      retries: 3
-      start_period: 5s
-      timeout: 30s  # Increase timeout for health check
 
 networks:
   custom_network:
